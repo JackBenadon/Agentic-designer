@@ -3,26 +3,42 @@ import type { Item, Kind } from "@/data/demo";
 import { RETRIEVED_AT } from "@/data/demo";
 import { money } from "@/lib/brief";
 
+const navLinks = [
+  ["/#example", "Example plan"],
+  ["/demo", "Try the demo"],
+];
+
 export function Header() {
   return (
-    <header className="border-b border-line bg-cream/90 backdrop-blur print:hidden">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
+    <header className="bg-page print:hidden">
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-6 px-5 py-5">
         <Link href="/" className="font-serif text-xl tracking-tight">
           Roomwise
         </Link>
-        <Link href="/demo" className="text-sm font-medium text-terracotta hover:underline">
-          Try the demo
-        </Link>
+        <nav aria-label="Main" className="flex items-center gap-6 lg:gap-8">
+          <ul className="hidden items-center gap-6 text-[0.7rem] font-medium uppercase tracking-[0.18em] text-ink/75 md:flex lg:gap-8">
+            {navLinks.map(([href, label]) => (
+              <li key={href}>
+                <Link href={href} className="hover:text-primary">
+                  {label}
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <Link href="/#chat" className={`${btnPrimary} px-4 py-2 text-xs`}>
+            Start my room plan
+          </Link>
+        </nav>
       </div>
     </header>
   );
 }
 
 const badgeTones = {
-  sample: "bg-amber-100 text-amber-900 border-amber-200",
-  agent: "bg-terracotta/10 text-rust border-terracotta/25",
-  reviewer: "bg-sage/15 text-[#3f4b37] border-sage/30",
-  muted: "bg-white text-ink/70 border-line",
+  sample: "border-dashed border-ink/40 bg-page text-ink",
+  agent: "border-primary/30 bg-primary/10 text-primary",
+  reviewer: "border-transparent bg-success text-ink",
+  muted: "border-ink/15 bg-page text-ink/75",
 };
 
 export function Badge({ tone, children }: { tone: keyof typeof badgeTones; children: React.ReactNode }) {
@@ -34,23 +50,14 @@ export function Badge({ tone, children }: { tone: keyof typeof badgeTones; child
 }
 
 export const btn =
-  "inline-flex items-center justify-center rounded-full px-5 py-3 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-terracotta disabled:opacity-50";
-export const btnPrimary = `${btn} bg-terracotta text-white hover:bg-rust`;
-export const btnSecondary = `${btn} border border-line bg-white text-ink hover:border-ink/30`;
-
-const tint: Record<Kind, string> = {
-  rug: "#efe6da",
-  table: "#f1e8dc",
-  lamp: "#f5ede1",
-  side: "#f3e6dc",
-  curtain: "#e9ece3",
-  pillow: "#f4e4da",
-  art: "#efe9e1",
-  chair: "#f2ece4",
-  ottoman: "#eef0e8",
-};
+  "inline-flex items-center justify-center rounded-full px-5 py-3 text-sm font-semibold transition-colors disabled:opacity-50";
+export const btnPrimary = `${btn} bg-primary text-white hover:bg-primary/90`;
+export const btnSecondary = `${btn} bg-surface text-ink hover:bg-surface/70`;
+// Secondary button for use on a surface-coloured panel.
+export const btnOnSurface = `${btn} bg-page text-ink hover:bg-page/70`;
 
 // Illustrated stand-ins for product photos: we have no rights to retailer imagery in the demo.
+// Shape colours depict the products themselves, so they stay literal.
 export function ProductArt({ item }: { item: Item }) {
   const n = item.name.toLowerCase();
   const fabric = n.includes("sage") ? "#8a9a7b" : n.includes("terracotta") ? "#c0643c" : "#b5562f";
@@ -118,8 +125,14 @@ export function ProductArt({ item }: { item: Item }) {
     ),
   };
   return (
-    <svg viewBox="0 0 200 150" role="img" aria-label={`Illustration: ${item.name}`} className="h-auto w-full">
-      <rect width="200" height="150" fill={tint[item.kind]} />
+    <svg
+      viewBox="0 0 200 150"
+      preserveAspectRatio="xMidYMid slice"
+      role="img"
+      aria-label={`Illustration: ${item.name}`}
+      className="block h-full w-full"
+    >
+      <rect width="200" height="150" fill="var(--color-surface)" />
       {shapes[item.kind]}
     </svg>
   );
@@ -131,35 +144,77 @@ export const seenOn = new Date(RETRIEVED_AT).toLocaleDateString("en-US", {
   year: "numeric",
 });
 
-export function ItemCard({ item, change, compact }: { item: Item; change?: string; compact?: boolean }) {
+// `image` takes any node (an <img>, next/image, or the illustration); it is cropped to fill a 4:3 frame.
+export function ItemCard({
+  item,
+  change,
+  compact,
+  image,
+}: {
+  item: Item;
+  change?: string;
+  compact?: boolean;
+  image?: React.ReactNode;
+}) {
   return (
-    <article className="flex flex-col overflow-hidden rounded-2xl border border-line bg-white">
-      <div className="relative">
-        <ProductArt item={item} />
+    <article className="flex flex-col overflow-hidden rounded-2xl bg-page ring-1 ring-ink/10">
+      <div className="relative aspect-[4/3] overflow-hidden">
+        <div className="h-full [&>*]:h-full [&>*]:w-full [&>*]:object-cover">{image ?? <ProductArt item={item} />}</div>
         {change && (
-          <span className="absolute left-3 top-3 rounded-full bg-sage px-2.5 py-0.5 text-xs font-semibold text-white">
+          <span className="absolute left-3 top-3 rounded-full bg-success px-2.5 py-0.5 text-xs font-semibold text-ink">
             {change}
           </span>
         )}
       </div>
-      <div className="flex flex-1 flex-col gap-2 p-4">
-        <div className="flex items-start justify-between gap-3">
-          <h3 className="font-medium leading-snug">{item.name}</h3>
-          <span className="shrink-0 font-semibold tabular-nums">{money(item.price)}</span>
+      <div className="flex flex-1 flex-col gap-2 p-5">
+        <div className="flex items-start justify-between gap-3 font-semibold leading-snug">
+          <h3>{item.name}</h3>
+          <span className="shrink-0 tabular-nums">{money(item.price)}</span>
         </div>
-        {!compact && <p className="text-sm text-ink/70">{item.why}</p>}
-        {item.note && !compact && (
-          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">⚠ {item.note}</p>
-        )}
-        <div className="mt-auto flex flex-wrap items-center justify-between gap-2 pt-2 text-xs text-ink/60">
-          <span>
-            {item.retailer} · price seen {seenOn} (sample)
-          </span>
-          <a href={item.url} target="_blank" rel="noopener noreferrer" className="font-medium text-terracotta hover:underline">
-            View source ↗
-          </a>
-        </div>
+        <p className="text-xs text-ink/75">
+          {item.retailer} · Price seen {seenOn}
+        </p>
+        {!compact && <p className="text-sm text-ink/75">{item.why}</p>}
+        {item.note && !compact && <p className="rounded-lg bg-surface px-3 py-2 text-xs">⚠ {item.note}</p>}
+        <a
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-auto pt-2 text-xs font-medium text-primary hover:underline"
+        >
+          View source ↗
+        </a>
       </div>
     </article>
+  );
+}
+
+export function BudgetMeter({ total, budget, currency }: { total: number; budget: number; currency: string }) {
+  const remaining = budget - total;
+  const pct = Math.min(100, Math.round((total / budget) * 100)) || 0;
+  return (
+    <div>
+      <p className="font-serif text-5xl tabular-nums sm:text-6xl">
+        {money(total)} <span className="text-2xl text-ink/75 sm:text-3xl">of {money(budget, currency)}</span>
+      </p>
+      <div
+        className="mt-4 h-2 rounded-full bg-ink/10"
+        role="progressbar"
+        aria-label="Share of budget used"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div className={`h-full rounded-full ${remaining >= 0 ? "bg-primary" : "bg-ink"}`} style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+        <span
+          className={`rounded-full px-3 py-1 font-semibold ${remaining >= 0 ? "bg-success text-ink" : "bg-primary/10 text-primary"}`}
+        >
+          {money(Math.abs(remaining), currency)} {remaining >= 0 ? "under budget" : "over budget"}
+        </span>
+        <span className="text-ink/75">incl. est. delivery</span>
+      </p>
+    </div>
   );
 }

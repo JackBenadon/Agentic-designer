@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { DELIVERY_ESTIMATE, concept, demoBrief, initialPlan, reviewer, revisedPlan } from "@/data/demo";
 import { type Brief, loadBrief, money } from "@/lib/brief";
-import { Badge, ItemCard, btnPrimary, btnSecondary, seenOn } from "@/components/ui";
+import { Badge, ItemCard, btnPrimary, btnOnSurface, seenOn } from "@/components/ui";
 
 const sum = (items: { price: number }[]) => items.reduce((s, i) => s + i.price, 0);
 
@@ -60,7 +60,7 @@ export default function PlanPage() {
       </div>
 
       {!tailored && (
-        <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+        <p className="mt-4 rounded-xl bg-surface px-4 py-3 text-sm">
           This demo always returns the seeded small-living-room plan. It isn&apos;t tailored to your answers yet. Your
           budget below is still compared honestly against this plan.
         </p>
@@ -79,19 +79,19 @@ export default function PlanPage() {
           )}
         </div>
 
-        <aside className="rounded-2xl border border-line bg-white p-5 lg:row-span-2">
+        <aside className="rounded-3xl bg-surface p-5 lg:row-span-2">
           <h2 className="font-medium">Budget</h2>
           <dl className="mt-3 grid gap-2 text-sm tabular-nums">
             <Row k={`Items (${revisedPlan.length})`} v={money(subtotal)} />
             <Row k="Delivery (estimate)" v={money(DELIVERY_ESTIMATE)} />
             <Row k="Plan total" v={money(total)} strong />
             <Row k="Your budget" v={money(brief.budget, brief.currency)} />
-            <div className={`flex justify-between rounded-lg px-3 py-2 font-semibold ${remaining >= 0 ? "bg-sage/15 text-[#3f4b37]" : "bg-red-50 text-red-800"}`}>
+            <div className={`flex justify-between rounded-lg px-3 py-2 font-semibold ${remaining >= 0 ? "bg-success text-ink" : "bg-primary/10 text-primary"}`}>
               <dt>{remaining >= 0 ? "Remaining" : "Over budget"}</dt>
               <dd>{money(Math.abs(remaining))}</dd>
             </div>
           </dl>
-          <p className="mt-3 text-xs text-ink/60">
+          <p className="mt-3 text-xs text-ink/75">
             Before review this plan was {money(originalTotal)}. Prices were recorded {seenOn} and may have changed.
             {brief.currency !== "USD" && " Sample prices are in USD; currency conversion comes with live results."}
           </p>
@@ -102,7 +102,7 @@ export default function PlanPage() {
                 <button className={btnPrimary} onClick={() => window.print()}>
                   Print plan
                 </button>
-                <button className={btnSecondary} onClick={share}>
+                <button className={btnOnSurface} onClick={share}>
                   Share plan
                 </button>
               </>
@@ -111,19 +111,21 @@ export default function PlanPage() {
                 Unlock full plan
               </Link>
             )}
-            <button className={btnSecondary} onClick={save}>
+            <button className={btnOnSurface} onClick={save}>
               Save plan
             </button>
-            <Link href="/intake#review" className={btnSecondary}>
+            {/* Full page load so the chat reads the hash on mount. */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+            <a href="/#review" className={btnOnSurface}>
               Refine this plan
-            </Link>
-            <p className="min-h-4 text-center text-xs text-sage" role="status">
+            </a>
+            <p className="min-h-4 text-center text-xs text-ink" role="status">
               {status}
             </p>
           </div>
         </aside>
 
-        <section aria-labelledby="review" className="rounded-2xl border border-sage/30 bg-sage/5 p-5 sm:p-6">
+        <section aria-labelledby="review" className="rounded-3xl bg-success/50 p-5 sm:p-6">
           <div className="flex flex-wrap items-center gap-2">
             <h2 id="review" className="font-serif text-2xl">
               Reviewer feedback
@@ -131,10 +133,10 @@ export default function PlanPage() {
             <Badge tone="reviewer">{reviewer.label}</Badge>
             <Badge tone="sample">Sample feedback</Badge>
           </div>
-          <p className="mt-2 text-xs text-ink/60">
+          <p className="mt-2 text-xs text-ink/75">
             A reviewer&apos;s perspective from a person recruited through Terac, not a certified interior designer.
           </p>
-          <blockquote className="mt-4 border-l-4 border-sage pl-4 italic text-ink/80">{reviewer.summary}</blockquote>
+          <blockquote className="mt-4 border-l-4 border-ink/30 pl-4 italic text-ink/80">{reviewer.summary}</blockquote>
 
           <h3 className="mt-6 font-medium">How the feedback changed the plan</h3>
           <ul className="mt-3 grid gap-4">
@@ -143,20 +145,20 @@ export default function PlanPage() {
               const after = revisedPlan.find((i) => i.id === n.about)!;
               const delta = after.price - before.price;
               return (
-                <li key={n.about} className="rounded-xl bg-white p-4 ring-1 ring-line">
+                <li key={n.about} className="rounded-xl bg-page p-4">
                   <p className="text-sm">
-                    <span className="font-medium text-[#3f4b37]">Reviewer: </span>
+                    <span className="font-medium text-ink">Reviewer: </span>
                     {n.text}
                   </p>
                   <div className="mt-3 grid items-center gap-2 text-sm sm:grid-cols-[1fr_auto_1fr]">
-                    <span className="rounded-lg bg-cream px-3 py-2 text-ink/60 line-through decoration-ink/30">
+                    <span className="rounded-lg bg-page/60 px-3 py-2 text-ink/75 line-through decoration-ink/30">
                       {before.name} · {money(before.price)}
                     </span>
-                    <span aria-hidden className="text-center text-ink/40">→</span>
-                    <span className="rounded-lg bg-sage/15 px-3 py-2">
+                    <span aria-hidden className="text-center text-ink/75">→</span>
+                    <span className="rounded-lg bg-success px-3 py-2">
                       {after.name} · {money(after.price)}
                       {delta !== 0 && (
-                        <span className="ml-1 text-xs text-ink/60">
+                        <span className="ml-1 text-xs text-ink/75">
                           ({delta > 0 ? "+" : "−"}
                           {money(Math.abs(delta))})
                         </span>
@@ -182,7 +184,7 @@ export default function PlanPage() {
         </div>
       </section>
 
-      <section className="mt-10 rounded-2xl border border-line bg-white p-5 text-sm">
+      <section className="mt-10 rounded-3xl bg-surface p-5 text-sm">
         <h2 className="font-medium">Availability and confidence</h2>
         <ul className="mt-2 grid gap-1 text-ink/70">
           {notes.map((i) => (
@@ -199,7 +201,7 @@ export default function PlanPage() {
 
 function Row({ k, v, strong }: { k: string; v: string; strong?: boolean }) {
   return (
-    <div className={`flex justify-between ${strong ? "border-t border-line pt-2 font-semibold" : ""}`}>
+    <div className={`flex justify-between ${strong ? "border-t border-ink/15 pt-2 font-semibold" : ""}`}>
       <dt>{k}</dt>
       <dd>{v}</dd>
     </div>
