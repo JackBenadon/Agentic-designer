@@ -112,8 +112,11 @@ export default function RoomChat() {
 
   // Follow the conversation, but don't yank the page on first load.
   const end = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLOListElement>(null);
   const mounted = useRef(false);
   useEffect(() => {
+    // The message list scrolls on its own, so keep it pinned to the newest message.
+    list.current?.scrollTo({ top: list.current.scrollHeight, behavior: "smooth" });
     if (mounted.current) end.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     mounted.current = true;
   }, [msgs.length, tick, phase]);
@@ -238,7 +241,12 @@ export default function RoomChat() {
   const tailored = (["roomType", "style", "keep", "avoid"] as const).every((k) => brief[k] === demoBrief[k]);
 
   return (
-    <section id="chat" className="mx-auto flex max-w-6xl scroll-mt-4 flex-col gap-6 px-5 pb-20 pt-6 lg:h-[calc(100svh-5rem)] lg:gap-5 lg:py-4">
+    // While chatting, the box fills the screen and the message list scrolls inside it; once a plan is
+    // building, it grows with its content so every recommendation is reachable by scrolling the page.
+    <section
+      id="chat"
+      className={`mx-auto flex max-w-6xl scroll-mt-4 flex-col gap-6 px-5 pb-20 pt-6 lg:gap-5 lg:py-4 ${phase === "ask" ? "lg:h-[calc(100svh-5rem)]" : ""}`}
+    >
       <div className="flex max-w-4xl flex-col gap-6">
         <div>
           <p className="text-balance text-xs font-medium uppercase tracking-[0.2em] text-primary">
@@ -251,10 +259,10 @@ export default function RoomChat() {
       </div>
 
       <div
-        className="flex h-[32rem] min-h-0 min-w-0 flex-col gap-4 overflow-hidden rounded-3xl bg-page/40 p-4 lg:h-auto lg:flex-1"
+        className={`flex min-h-0 min-w-0 flex-col gap-4 rounded-3xl bg-page/40 p-4 ${phase === "ask" ? "h-[32rem] overflow-hidden lg:h-auto lg:flex-1" : ""}`}
         aria-label="Chat with your design agent"
       >
-        <ol className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1" aria-live="polite">
+        <ol ref={list} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1" aria-live="polite">
           {msgs.map((m, i) => (
             <li key={i} className="flex flex-col">
               <Bubble from={m.from}>
