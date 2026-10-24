@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: roomwise-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: EXA_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TERAC_API_KEY
+        sync: false
+      - key: TERAC_MCP_URL
+        sync: false
+      - key: WHOP_API_KEY
+        sync: false
+      - key: MODEL_NAME
+        value: openai/gpt-oss-120b
