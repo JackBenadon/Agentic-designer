@@ -1,5 +1,5 @@
 import { Exa } from "exa-js";
-import { config } from "./config.js";
+import { config } from "./config";
 
 const exa = new Exa(config.exaApiKey);
 

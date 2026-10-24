@@ -20,71 +20,8 @@ const emptyBrief: Brief = {
   delivery: "",
 };
 
-type Field = "roomType" | "dimensions" | "photos" | "budget" | "style" | "keep" | "avoid" | "constraints";
-type Step = { field: Field; ask: string; chips: string[]; placeholder: string; multi?: boolean; optional?: boolean };
-
-const STEPS: Step[] = [
-  {
-    field: "roomType",
-    ask: "Hi, I'm your Roomwise design agent. Which room are we refreshing?",
-    chips: ["Living room", "Bedroom", "Home office", "Dining room", "Kids' room"],
-    placeholder: "Or type another room",
-  },
-  {
-    field: "dimensions",
-    ask: "Roughly how big is it? Skip this if you're not sure.",
-    chips: ["Under 120 sq ft", "120–200 sq ft", "Over 200 sq ft"],
-    placeholder: "e.g. 12 × 14 ft",
-    optional: true,
-  },
-  {
-    field: "photos",
-    ask: "Can you share a photo or two? A wide shot from the doorway works best.",
-    chips: [],
-    placeholder: "",
-    optional: true,
-  },
-  {
-    field: "budget",
-    ask: "What's your total budget?",
-    chips: ["$800", "$1,500", "$3,000"],
-    placeholder: "e.g. 2000, or 1800 EUR",
-  },
-  {
-    field: "style",
-    ask: "What style and colours feel like you? Pick any, or describe it.",
-    chips: ["Warm minimal", "Scandinavian", "Mid-century", "Japandi", "Solid colours"],
-    placeholder: "e.g. cream and deep red",
-    multi: true,
-    optional: true,
-  },
-  {
-    field: "keep",
-    ask: "Is there anything you're keeping?",
-    chips: ["My sofa", "My rug", "My bed", "My desk"],
-    placeholder: "Something else you're keeping",
-    multi: true,
-    optional: true,
-  },
-  {
-    field: "avoid",
-    ask: "Anything to avoid?",
-    chips: ["Scratchy natural-fiber rugs", "Glass tables", "Dark colours"],
-    placeholder: "Something else to avoid",
-    multi: true,
-    optional: true,
-  },
-  {
-    field: "constraints",
-    ask: "Last one: any constraints, and where should things be delivered?",
-    chips: ["Pets", "Children", "Accessibility needs", "Rental: no drilling"],
-    placeholder: "Delivery city or ZIP",
-    multi: true,
-    optional: true,
-  },
-];
-
-const REVIEW_ASK = "Here's your brief. Change anything that's off, then confirm and I'll get to work.";
+const INTRO =
+  "Hi, I’m your Roomwise design agent. Tell me about the room you want to refresh—share whatever feels important, in any order.";
 
 // Each stage runs for one tick and completes on the next; content for a stage appears once it completes.
 const STAGES = [
@@ -96,46 +33,57 @@ const STAGES = [
 const LAST_TICK = STAGES.length * 2 - 1;
 const doneAt = (i: number) => i * 2 + 1;
 
-function apply(b: Brief, field: Field, chips: string[], text: string): Brief {
-  if (field === "budget") {
-    const n = Number((text || chips[0] || "").replace(/[^\d.]/g, ""));
-    const cur = text.match(/\b(usd|eur|gbp|cad|aud)\b/i)?.[1].toUpperCase();
-    return { ...b, budget: n, currency: cur ?? b.currency };
-  }
-  if (field === "constraints") return { ...b, constraints: chips, delivery: text };
-  return { ...b, [field]: [...chips, text].filter(Boolean).join(", ") };
-}
-
 type Msg = { from: "agent" | "user"; text: string };
+type ApiPlan = {
+  status: string;
+  room_brief: { budget: number; currency: string };
+  design_concept: string;
+  items: Array<{
+    name: string;
+    retailer: string;
+    url: string;
+    image_url: string | null;
+    price: number | null;
+    currency: string;
+    dimensions: string | null;
+    reason_selected: string;
+    availability_confidence: string;
+  }>;
+  estimated_subtotal: number | null;
+  delivery_estimate: number | null;
+  estimated_total: number | null;
+  terac_review: { requested: boolean; completed: boolean; feedback_summary: string; changes_made: string[] };
+  assumptions: string[];
+  unresolved_questions: string[];
+};
 const sum = (items: Item[]) => items.reduce((s, i) => s + i.price, 0);
 
 export default function RoomChat() {
   const [brief, setBrief] = useState<Brief>(emptyBrief);
-  const [step, setStep] = useState(0);
-  const [answered, setAnswered] = useState<Field[]>([]);
-  const [msgs, setMsgs] = useState<Msg[]>([{ from: "agent", text: STEPS[0].ask }]);
-  const [phase, setPhase] = useState<"ask" | "review" | "run">("ask");
+  const [msgs, setMsgs] = useState<Msg[]>([{ from: "agent", text: INTRO }]);
+  const [phase, setPhase] = useState<"ask" | "run">("ask");
+  const [draft, setDraft] = useState("");
   const [tick, setTick] = useState(0);
   const [status, setStatus] = useState("");
+  const [apiPlan, setApiPlan] = useState<ApiPlan | null>(null);
+  const [apiError, setApiError] = useState("");
+  const [loadingPlan, setLoadingPlan] = useState(false);
+  const [typing, setTyping] = useState(false);
 
   // #demo comes from the demo page; #review from "Refine this plan" on /plan.
   useEffect(() => {
     const saved = loadBrief();
-    /* eslint-disable react-hooks/set-state-in-effect -- reading the URL hash and sessionStorage after hydration */
     if (location.hash === "#review" && saved) {
       setBrief(saved);
-      setPhase("review");
-      setMsgs([{ from: "agent", text: "Welcome back. " + REVIEW_ASK }]);
+      setMsgs([{ from: "agent", text: "Welcome back. Tell me naturally what you’d like to change, or say “build my plan” when it feels right." }]);
     } else if (location.hash === "#demo") {
       setBrief(demoBrief);
-      setPhase("review");
       setMsgs([
-        { from: "agent", text: STEPS[0].ask },
+        { from: "agent", text: INTRO },
         { from: "user", text: "Use the demo room" },
-        { from: "agent", text: "I've filled everything in from the sample living room. " + REVIEW_ASK },
+        { from: "agent", text: "I’ve loaded the sample living room. Ask for changes, add context, or say “build my plan” when you’re ready." },
       ]);
     }
-    /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
   useEffect(() => {
@@ -152,47 +100,105 @@ export default function RoomChat() {
     mounted.current = true;
   }, [msgs.length, tick, phase]);
 
-  function answer(text: string, next: Brief) {
-    const field = STEPS[step].field;
-    const n = step + 1;
-    setBrief(next);
-    setAnswered((a) => [...a, field]);
-    setMsgs((m) => [...m, { from: "user", text }, { from: "agent", text: n < STEPS.length ? STEPS[n].ask : REVIEW_ASK }]);
-    if (n < STEPS.length) setStep(n);
-    else setPhase("review");
-  }
+  async function sendMessage(text: string) {
+    const message = text.trim();
+    if (!message || typing) return;
 
-  function fillDemo() {
-    const next = { ...brief };
-    for (const { field } of STEPS) {
-      if (answered.includes(field)) continue;
-      if (field === "constraints") next.delivery = demoBrief.delivery;
-      if (field === "style") next.colors = demoBrief.colors;
-      Object.assign(next, { [field]: demoBrief[field] });
+    const history = msgs;
+    setDraft("");
+    setMsgs((current) => [...current, { from: "user", text: message }]);
+    setTyping(true);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message,
+          history,
+          brief: { ...brief, photos: brief.photos.length > 0 ? `[${brief.photos.length} photo(s) attached]` : [] },
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "I couldn’t understand that response.");
+
+      const nextBrief: Brief = { ...brief, ...data.brief, photos: brief.photos };
+      setBrief(nextBrief);
+      if (typeof data.reply === "string") setMsgs((current) => [...current, { from: "agent", text: data.reply }]);
+      if (data.build === true) await confirm(nextBrief);
+    } catch (error) {
+      setMsgs((current) => [
+        ...current,
+        { from: "agent", text: error instanceof Error ? error.message : "Something went wrong. Please try saying that another way." },
+      ]);
+    } finally {
+      setTyping(false);
     }
-    setBrief(next);
-    setPhase("review");
-    setMsgs((m) => [
-      ...m,
-      { from: "user", text: "Use the demo room" },
-      { from: "agent", text: "I've filled in the rest from the sample living room. " + REVIEW_ASK },
-    ]);
   }
 
-  function confirm() {
-    saveBrief(brief);
+  async function addPhotos(files: FileList | null) {
+    if (!files?.length) return;
+    const images = [...files].filter((file) => file.type.startsWith("image/"));
+    const urls = await Promise.all(images.map((file) => new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    })));
+    setBrief((current) => ({ ...current, photos: [...current.photos, ...urls] }));
+    setMsgs((current) => [...current, { from: "user", text: `Attached ${urls.length} room photo${urls.length === 1 ? "" : "s"}.` }]);
+  }
+
+  async function confirm(planBrief = brief) {
+    saveBrief(planBrief);
     setTick(0);
+    setApiPlan(null);
+    setApiError("");
+    setLoadingPlan(true);
     setPhase("run");
     setMsgs((m) => [...m, { from: "user", text: "Looks good. Build my plan." }]);
+
+    const payload = {
+      room_type: planBrief.roomType,
+      // Browser data URLs are deliberately not sent to the planner as public URLs.
+      photo_urls: planBrief.photos.filter((photo) => /^https?:\/\//.test(photo)),
+      photo_processing_consent: planBrief.photos.length > 0,
+      dimensions: planBrief.dimensions || null,
+      budget: planBrief.budget,
+      currency: planBrief.currency,
+      style_preferences: planBrief.style.split(",").map((v) => v.trim()).filter(Boolean),
+      preferred_colors: planBrief.colors.split(",").map((v) => v.trim()).filter(Boolean),
+      items_to_keep: planBrief.keep.split(",").map((v) => v.trim()).filter(Boolean),
+      items_to_avoid: planBrief.avoid.split(",").map((v) => v.trim()).filter(Boolean),
+      constraints: planBrief.constraints,
+      delivery_postal_code: planBrief.delivery || undefined,
+      customer_id: "browser-session",
+      confirmed: true,
+    };
+
+    try {
+      const response = await fetch("/api/plans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "The planner could not create a plan.");
+      setApiPlan(result as ApiPlan);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "The planner could not create a plan.");
+    } finally {
+      setLoadingPlan(false);
+    }
   }
 
   function refine() {
-    setPhase("review");
+    setPhase("ask");
     setStatus("");
     setMsgs((m) => [
       ...m,
       { from: "user", text: "Refine this plan" },
-      { from: "agent", text: "Sure. Change anything below and I'll rebuild it." },
+      { from: "agent", text: "Of course. Tell me what isn’t working in your own words, and I’ll update the brief." },
     ]);
   }
 
@@ -206,24 +212,25 @@ export default function RoomChat() {
   }
 
   const tailored = (["roomType", "style", "keep", "avoid"] as const).every((k) => brief[k] === demoBrief[k]);
-  const current = STEPS[step];
 
   return (
-    <section id="chat" className="mx-auto grid max-w-6xl scroll-mt-4 gap-10 px-5 pb-20 pt-8 lg:grid-cols-[5fr_7fr] lg:gap-16 lg:pb-28 lg:pt-14">
-      <div className="flex flex-col gap-10 lg:sticky lg:top-6 lg:self-start">
+    <section id="chat" className="mx-auto flex max-w-6xl scroll-mt-4 flex-col gap-6 px-5 pb-20 pt-6 lg:h-[calc(100svh-5rem)] lg:gap-5 lg:py-4">
+      <div className="flex max-w-4xl flex-col gap-6">
         <div>
           <p className="text-balance text-xs font-medium uppercase tracking-[0.2em] text-primary">
             Room plans, reviewed by a real person.
           </p>
-          <h1 className="mt-5 max-w-[17ch] text-balance font-serif text-4xl leading-[1.1] sm:text-5xl lg:text-[2.75rem]">
+          <h1 className="mt-3 max-w-[30ch] text-balance font-serif text-4xl leading-[1.05] sm:text-5xl lg:text-[2.75rem]">
             A room refresh, researched and reviewed for your budget.
           </h1>
         </div>
-        <Summary brief={brief} />
       </div>
 
-      <div className="flex min-w-0 flex-col gap-4" aria-label="Chat with your design agent">
-        <ol className="flex flex-col gap-4" aria-live="polite">
+      <div
+        className="flex h-[32rem] min-h-0 min-w-0 flex-col gap-4 overflow-hidden rounded-3xl bg-page/40 p-4 lg:h-auto lg:flex-1"
+        aria-label="Chat with your design agent"
+      >
+        <ol className="min-h-0 flex-1 overflow-y-auto pr-1" aria-live="polite">
           {msgs.map((m, i) => (
             <li key={i} className="flex flex-col">
               <Bubble from={m.from}>{m.text}</Bubble>
@@ -231,27 +238,64 @@ export default function RoomChat() {
           ))}
         </ol>
 
-        {phase === "ask" && current.field === "photos" && (
-          <PhotoStep
-            photos={brief.photos}
-            onChange={(photos) => setBrief((b) => ({ ...b, photos }))}
-            onNext={() =>
-              answer(brief.photos.length ? `Added ${brief.photos.length} photo${brief.photos.length > 1 ? "s" : ""}` : "Skip the photo for now", brief)
-            }
-            onDemo={fillDemo}
-          />
-        )}
-        {phase === "ask" && current.field !== "photos" && (
-          <StepInput
-            key={current.field}
-            step={current}
-            onAnswer={(chips, text) => answer([...chips, text].filter(Boolean).join(", ") || "Skip", apply(brief, current.field, chips, text))}
-            onDemo={fillDemo}
-          />
-        )}
-        {phase === "review" && <ReviewForm brief={brief} onChange={setBrief} onConfirm={confirm} />}
+        {typing && <AgentBlock><span className="animate-pulse">Thinking…</span></AgentBlock>}
 
-        {phase === "run" && (
+        {phase === "ask" && (
+          <form
+            className="grid gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void sendMessage(draft);
+            }}
+          >
+            {brief.photos.length > 0 && (
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                {brief.photos.map((photo, index) => (
+                  // eslint-disable-next-line @next/next/no-img-element -- local user-selected data URL
+                  <img key={index} src={photo} alt={`Attached room ${index + 1}`} className="h-12 w-16 shrink-0 rounded-lg object-cover" />
+                ))}
+                <span className="text-xs text-ink/65">{brief.photos.length} attached</span>
+              </div>
+            )}
+            <input
+              className="w-full rounded-full bg-page px-5 py-3 text-base ring-1 ring-ink/15 outline-none focus:ring-2 focus:ring-primary"
+              aria-label="Message your design agent"
+              placeholder="Tell me about your room…"
+              value={draft}
+              disabled={typing}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+            <div className="flex items-center justify-between gap-4 px-2 text-xs text-ink/65">
+              <label className="cursor-pointer hover:text-primary">
+                Add room photos
+                <input className="sr-only" type="file" accept="image/*" multiple onChange={(event) => void addPhotos(event.target.files)} />
+              </label>
+              <span>Press Enter to send</span>
+            </div>
+            <p className="px-2 text-xs text-ink/60">
+              Adding a photo gives permission to use it for this plan. Avoid faces, documents, and addresses.
+            </p>
+          </form>
+        )}
+
+        {phase === "run" && loadingPlan && (
+          <AgentBlock wide>
+            <p>Building your plan from the confirmed brief…</p>
+            <p className="mt-2 text-sm text-ink/70">Searching products and checking the available review workflow.</p>
+          </AgentBlock>
+        )}
+
+        {phase === "run" && apiError && !loadingPlan && (
+          <AgentBlock wide>
+            <p className="font-medium">I couldn&apos;t build the plan.</p>
+            <p className="mt-1 text-sm text-ink/75">{apiError}</p>
+            <button className={`${btnPrimary} mt-4`} onClick={() => void confirm()}>Try again</button>
+          </AgentBlock>
+        )}
+
+        {phase === "run" && apiPlan && !loadingPlan && <LivePlan plan={apiPlan} />}
+
+        {phase === "run" && !apiPlan && !loadingPlan && !apiError && (
           <>
             <AgentBlock>
               <p>
@@ -317,6 +361,40 @@ export default function RoomChat() {
         <div ref={end} />
       </div>
     </section>
+  );
+}
+
+function LivePlan({ plan }: { plan: ApiPlan }) {
+  const moneyValue = (value: number | null) => value === null ? "Unconfirmed" : money(value, plan.room_brief.currency);
+  return (
+    <div className="grid gap-5 rounded-3xl bg-surface p-6 sm:p-8">
+      <div>
+        <Badge tone="agent">Backend plan · {plan.status}</Badge>
+        <h2 className="mt-3 font-serif text-2xl sm:text-3xl">Your researched room plan</h2>
+        <p className="mt-2 text-ink/80">{plan.design_concept}</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {plan.items.map((item) => (
+          <article key={`${item.name}-${item.url}`} className="rounded-2xl bg-page p-4">
+            <h3 className="font-medium">{item.name}</h3>
+            <p className="mt-1 text-sm text-ink/70">{item.retailer} · {moneyValue(item.price)}</p>
+            <p className="mt-2 text-sm text-ink/80">{item.reason_selected}</p>
+            <a className="mt-3 inline-block text-sm font-medium text-primary hover:underline" href={item.url} target="_blank" rel="noreferrer">
+              View source →
+            </a>
+          </article>
+        ))}
+      </div>
+      <div className="border-t border-ink/15 pt-4 text-sm">
+        <p>Items: {moneyValue(plan.estimated_subtotal)} · Delivery: {moneyValue(plan.delivery_estimate)} · <strong>Total: {moneyValue(plan.estimated_total)}</strong></p>
+        {plan.terac_review.requested && (
+          <p className="mt-2">
+            {plan.terac_review.completed ? "Reviewer feedback" : "Terac review status"}: {plan.terac_review.feedback_summary}
+          </p>
+        )}
+        {plan.assumptions.length > 0 && <p className="mt-2 text-ink/70">Note: {plan.assumptions[0]}</p>}
+      </div>
+    </div>
   );
 }
 
@@ -410,239 +488,5 @@ function RevisionBlock() {
       </ul>
       <CardStrip items={revisedPlan} changed={changed} />
     </AgentBlock>
-  );
-}
-
-const input =
-  "w-full rounded-full bg-page px-4 py-2.5 text-base ring-1 ring-ink/15 outline-none focus:ring-2 focus:ring-primary";
-
-const chip = (on: boolean) =>
-  `rounded-full px-4 py-2 text-sm transition-colors ${on ? "bg-primary text-white" : "bg-surface hover:bg-surface/70"}`;
-
-function DemoChip({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="rounded-full border border-dashed border-primary px-4 py-2 text-sm font-medium text-primary hover:bg-primary/5"
-    >
-      Use the demo room
-    </button>
-  );
-}
-
-function StepInput({ step, onAnswer, onDemo }: { step: Step; onAnswer: (chips: string[], text: string) => void; onDemo: () => void }) {
-  const [picked, setPicked] = useState<string[]>([]);
-  const [text, setText] = useState("");
-  const invalid = step.field === "budget" && text !== "" && !/\d/.test(text);
-  const empty = !picked.length && !text;
-
-  return (
-    <form
-      className="mt-2 grid gap-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!invalid && (step.optional || !empty)) onAnswer(picked, text.trim());
-      }}
-    >
-      <div className="flex flex-wrap gap-2" role="group" aria-label="Suggested answers">
-        {step.chips.map((c) => (
-          <button
-            key={c}
-            type="button"
-            aria-pressed={step.multi ? picked.includes(c) : undefined}
-            className={chip(picked.includes(c))}
-            onClick={() =>
-              step.multi ? setPicked((p) => (p.includes(c) ? p.filter((x) => x !== c) : [...p, c])) : onAnswer([c], "")
-            }
-          >
-            {c}
-          </button>
-        ))}
-        <DemoChip onClick={onDemo} />
-      </div>
-      <div className="flex gap-2">
-        <input
-          className={input}
-          aria-label={step.placeholder}
-          placeholder={step.placeholder}
-          inputMode={step.field === "budget" ? "decimal" : undefined}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <button className={`${btnPrimary} shrink-0`} disabled={invalid || (!step.optional && empty)}>
-          {empty && step.optional ? "Skip" : step.multi ? "Continue" : "Send"}
-        </button>
-      </div>
-      {invalid && <p className="text-sm text-primary">Please include a number, e.g. 1500.</p>}
-    </form>
-  );
-}
-
-function PhotoStep({
-  photos,
-  onChange,
-  onNext,
-  onDemo,
-}: {
-  photos: string[];
-  onChange: (p: string[]) => void;
-  onNext: () => void;
-  onDemo: () => void;
-}) {
-  const fileInput = useRef<HTMLInputElement>(null);
-  const [replacing, setReplacing] = useState<number | null>(null);
-
-  const read = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result as string);
-      r.onerror = reject;
-      r.readAsDataURL(file);
-    });
-
-  async function onFiles(files: FileList | null) {
-    if (!files?.length) return;
-    const urls = await Promise.all([...files].filter((f) => f.type.startsWith("image/")).map(read));
-    if (replacing !== null) onChange(photos.map((p, i) => (i === replacing ? urls[0] ?? p : p)));
-    else onChange([...photos, ...urls]);
-    setReplacing(null);
-    if (fileInput.current) fileInput.current.value = "";
-  }
-
-  const pick = (index: number | null) => {
-    setReplacing(index);
-    fileInput.current?.click();
-  };
-
-  return (
-    <div className="mt-2 grid gap-4">
-      <input
-        ref={fileInput}
-        type="file"
-        accept="image/*"
-        multiple={replacing === null}
-        className="sr-only"
-        aria-label="Upload room photos"
-        onChange={(e) => onFiles(e.target.files)}
-      />
-      {photos.length > 0 && (
-        <ul className="flex flex-wrap justify-end gap-3">
-          {photos.map((src, i) => (
-            <li key={i} className="w-32">
-              {/* eslint-disable-next-line @next/next/no-img-element -- user uploads are data URLs */}
-              <img src={src} alt={`Room photo ${i + 1}`} className="aspect-[4/3] w-full rounded-xl object-cover" />
-              <div className="mt-1 flex justify-between text-xs">
-                <button type="button" className="text-primary hover:underline" onClick={() => pick(i)}>
-                  Replace
-                </button>
-                <button type="button" className="hover:underline" onClick={() => onChange(photos.filter((_, j) => j !== i))}>
-                  Remove
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="flex flex-wrap gap-2">
-        <button type="button" className={chip(false)} onClick={() => pick(null)}>
-          {photos.length ? "Add another photo" : "Upload or take a photo"}
-        </button>
-        {!photos.includes("/demo/room.svg") && (
-          <button type="button" className={chip(false)} onClick={() => onChange([...photos, "/demo/room.svg"])}>
-            Use the sample photo
-          </button>
-        )}
-        <DemoChip onClick={onDemo} />
-        <button type="button" className={`${btnPrimary} ml-auto`} onClick={onNext}>
-          {photos.length ? "Continue" : "Skip"}
-        </button>
-      </div>
-      <p className="text-xs text-ink/75">
-        Your photo is only used to create your room plan. Please make sure it doesn&apos;t show sensitive personal
-        information like documents, faces, or addresses.
-      </p>
-    </div>
-  );
-}
-
-function ReviewForm({ brief, onChange, onConfirm }: { brief: Brief; onChange: (b: Brief) => void; onConfirm: () => void }) {
-  const set = (patch: Partial<Brief>) => onChange({ ...brief, ...patch });
-  const field = (label: string, key: "roomType" | "dimensions" | "style" | "colors" | "keep" | "avoid" | "delivery") => (
-    <label className="text-sm">
-      {label}
-      <input className={`${input} mt-1`} value={brief[key]} required={key === "roomType"} onChange={(e) => set({ [key]: e.target.value })} />
-    </label>
-  );
-  return (
-    <form
-      className="grid gap-3 rounded-3xl bg-surface/60 p-5"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onConfirm();
-      }}
-    >
-      <div className="grid gap-3 sm:grid-cols-2">
-        {field("Room", "roomType")}
-        {field("Size", "dimensions")}
-        <label className="text-sm">
-          Budget ({brief.currency})
-          <input
-            className={`${input} mt-1`}
-            type="number"
-            min={1}
-            required
-            value={brief.budget || ""}
-            onChange={(e) => set({ budget: Number(e.target.value) })}
-          />
-        </label>
-        {field("Delivery", "delivery")}
-        {field("Style", "style")}
-        {field("Colours", "colors")}
-        {field("Keep", "keep")}
-        {field("Avoid", "avoid")}
-      </div>
-      <label className="text-sm">
-        Constraints
-        <input
-          className={`${input} mt-1`}
-          value={brief.constraints.join(", ")}
-          onChange={(e) => set({ constraints: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-        />
-      </label>
-      <div className="pt-2">
-        <button className={btnPrimary}>Confirm brief and build my plan</button>
-      </div>
-    </form>
-  );
-}
-
-function Summary({ brief }: { brief: Brief }) {
-  const rows: [string, string][] = [
-    ["Room", [brief.roomType, brief.dimensions].filter(Boolean).join(", ")],
-    ["Budget", brief.budget ? money(brief.budget, brief.currency) : ""],
-    ["Style", [brief.style, brief.colors].filter(Boolean).join("; ")],
-    ["Keep", brief.keep],
-    ["Avoid", brief.avoid],
-    ["Constraints", [...brief.constraints, brief.delivery && `deliver to ${brief.delivery}`].filter(Boolean).join(", ")],
-  ];
-  return (
-    <aside aria-label="Your brief so far" className="rounded-3xl bg-surface/50 p-6">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-xs font-medium uppercase tracking-[0.2em]">Your brief</h2>
-        {brief.photos.length > 0 && (
-          // eslint-disable-next-line @next/next/no-img-element -- data URL or local mock
-          <img src={brief.photos[0]} alt="" className="h-10 w-14 rounded-lg object-cover" />
-        )}
-      </div>
-      <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 text-sm">
-        {rows.map(([k, v]) => (
-          <div key={k} className="min-w-0">
-            <dt className="text-xs text-ink/75">{k}</dt>
-            <dd className={`mt-0.5 break-words ${v ? "font-medium" : "text-ink/50"}`}>{v || "—"}</dd>
-          </div>
-        ))}
-      </dl>
-    </aside>
   );
 }

@@ -1,4 +1,4 @@
-import { roomBriefSchema, roomPlanSchema, type RoomBrief, type RoomPlan } from "./schemas.js";
+import { roomBriefSchema, roomPlanSchema, type RoomBrief, type RoomPlan } from "./schemas";
 
 export const demoRoomBrief: RoomBrief = roomBriefSchema.parse({
   room_type: "small living room",

@@ -1,4 +1,4 @@
-import { roomBriefSchema, type RoomBrief, type RoomPlan } from "./schemas.js";
+import { roomBriefSchema, type RoomBrief, type RoomPlan } from "./schemas";
 import { z } from "zod";
 
 export const intakeDraftSchema = z.object({

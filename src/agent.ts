@@ -1,9 +1,10 @@
-import { Agent, OpenAIProvider, run, tool } from "@openai/agents";
+import { Agent, OpenAIProvider, run, tool, type MCPServer } from "@openai/agents";
 import { z } from "zod";
-import { config } from "./config.js";
-import { searchProducts } from "./exa.js";
-import { roomPlanSchema, type RoomPlan } from "./schemas.js";
-import { finalizeIntake } from "./intake.js";
+import { config } from "./config";
+import { searchProducts } from "./exa";
+import { roomPlanSchema, type RoomPlan } from "./schemas";
+import { finalizeIntake } from "./intake";
+import { createTeracServer } from "./terac";
 
 function createSearchProductsTool() {
   let callCount = 0;
@@ -37,18 +38,60 @@ const provider = new OpenAIProvider({
 
 const model = await provider.getModel(config.model);
 
-function createRoomwiseAgent() {
+function createTeracTools(server: MCPServer) {
+  const requestReview = tool({
+    name: "request_terac_review",
+    description: "Request Terac feasibility for one human to review an anonymized room plan. This does not launch recruitment.",
+    parameters: z.object({
+      planSummary: z.string().min(1).max(4000),
+      reviewQuestions: z.array(z.string().min(1)).min(1).max(4),
+      budget: z.number().positive(),
+      currency: z.string().length(3),
+    }),
+    execute: async ({ planSummary, reviewQuestions, budget, currency }) => {
+      await server.callTool("terac_get_context", {});
+      const result = await server.callTool("terac_request_feasibility", {
+        taskDescription: `Review this anonymized room decorating plan and answer the focused questions. Budget: ${currency.toUpperCase()} ${budget}. Plan: ${planSummary}. Questions: ${reviewQuestions.join(" | ")}`,
+        panelDescription:
+          "One adult with practical home decorating experience. Their feedback is opinion, not professional certification.",
+        submissionCount: 1,
+        timelineHours: 48,
+      });
+      return JSON.stringify(result);
+    },
+  });
+
+  const checkReview = tool({
+    name: "check_terac_review_status",
+    description: "Retrieve the status of an existing Terac feasibility request.",
+    parameters: z.object({ requestId: z.string().min(1) }),
+    execute: async ({ requestId }) => {
+      await server.callTool("terac_get_context", {});
+      return JSON.stringify(await server.callTool("terac_get_feasibility_request", { requestId }));
+    },
+  });
+
+  return [requestReview, checkReview];
+}
+
+function createRoomwiseAgent(teracServer: MCPServer | null) {
+  const teracInstructions = teracServer
+    ? `After building the sourced draft, call request_terac_review exactly once with an anonymized summary and focused questions about style fit, practicality, assumptions, and budget tradeoffs. Never include customer identity or photo URLs. This requests feasibility only; it does not recruit a reviewer or produce feedback. If confirmed, use status "awaiting_review", requested true, completed false, and state that no reviewer feedback exists yet. Include the request ID when returned.`
+    : `Terac is not connected. Do not claim that a human reviewer was consulted. Set terac_review.requested and completed to false.`;
+
   return new Agent({
     name: "Roomwise coordinator",
     model,
-    modelSettings: { maxTokens: 1800 },
+    modelSettings: { maxTokens: 2600 },
     instructions: `You are the Roomwise coordinator. Create a practical, shoppable decorating plan from a structured room brief.
 
 Call search_products exactly once with 2–4 distinct product categories and a concise summary of the style and hard constraints. Build a balanced plan from only the returned products; do not recommend multiple alternatives from the same category. Treat each product's retailer URL, listedPrice, evidence, and sourceCheckedAt as sourced facts. Do not infer a price, dimensions, stock, image, or retailer when the search result omits it. Keep omitted fields null and availability unconfirmed. Only compute the subtotal from returned listedPrice values. Set delivery and total to null when delivery is unknown, and mention that uncertainty. Never assume that prices are accurate, products are deliverable, or products satisfy pet, child, accessibility, or rental constraints unless the returned evidence explicitly says so. Do not describe an unverified claim as fact. Respect budget, items to keep, items to avoid, accessibility, safety, and delivery constraints. Never infer exact room measurements from an image.
 
-Terac access is currently unavailable. Do not claim that a human reviewer was consulted. Return status "needs_customer_input" if material brief information is missing; otherwise return status "draft" until Terac review is configured.
+${teracInstructions}
 
-Return valid JSON matching this shape:
+Return status "needs_customer_input" if material brief information is missing. Otherwise return "awaiting_review" only after Terac confirms a feasibility request; return "draft" when no request was confirmed.
+
+Keep all prose concise so the complete response fits comfortably within the output limit. Return valid JSON matching this shape:
 {
   "status": "draft | awaiting_review | revised | delivered | needs_customer_input",
   "room_brief": {},
@@ -61,7 +104,7 @@ Return valid JSON matching this shape:
   "assumptions": [],
   "unresolved_questions": []
 }`,
-    tools: [createSearchProductsTool()],
+    tools: [createSearchProductsTool(), ...(teracServer ? createTeracTools(teracServer) : [])],
   });
 }
 
@@ -78,11 +121,34 @@ function parseJsonOutput(output: unknown): unknown {
 
 export async function createRoomPlan(roomBrief: unknown): Promise<RoomPlan> {
   const validatedBrief = finalizeIntake(roomBrief);
-  const result = await run(createRoomwiseAgent(), JSON.stringify(validatedBrief), { maxTurns: 3 });
+  const teracServer = createTeracServer();
+  const connectedServers: MCPServer[] = [];
 
-  if (!result.finalOutput) {
-    throw new Error("The Roomwise agent returned no plan.");
+  if (teracServer) {
+    try {
+      await teracServer.connect();
+      connectedServers.push(teracServer);
+    } catch (error) {
+      console.warn("Terac MCP connection unavailable; continuing without human review.", error);
+    }
   }
 
-  return roomPlanSchema.parse(parseJsonOutput(result.finalOutput));
+  try {
+    const result = await run(createRoomwiseAgent(connectedServers[0] ?? null), JSON.stringify(validatedBrief), { maxTurns: 6 });
+
+    if (!result.finalOutput) {
+      throw new Error("The Roomwise agent returned no plan.");
+    }
+
+    const output = parseJsonOutput(result.finalOutput);
+    if (!output || typeof output !== "object" || Array.isArray(output)) {
+      throw new Error("The Roomwise agent returned an invalid plan.");
+    }
+
+    // The validated server-side brief is authoritative. Do not rely on the model
+    // to repeat private/session fields such as customer_id in its JSON output.
+    return roomPlanSchema.parse({ ...output, room_brief: validatedBrief });
+  } finally {
+    await teracServer?.close().catch(() => undefined);
+  }
 }
