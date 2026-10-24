@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* primary: CTAs, links, accents, focus · page: background · surface: cards, agent bubbles, bands
+   success: fill only, never text on page · ink: derived dark neutral for text */
+@theme {
+  --color-primary: #a4303f;
+  --color-page: #ffeccc;
+  --color-surface: #f2d0a4;
+  --color-success: #c8d6af;
+  --color-ink: #2a1215;
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-serif: var(--font-fraunces);
+}
+
+body {
+  background: var(--color-page);
+  color: var(--color-ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
