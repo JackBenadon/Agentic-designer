@@ -21,7 +21,7 @@ const emptyBrief: Brief = {
 };
 
 const INTRO =
-  "Hi, I’m your Roomwise design agent. Tell me about the room you want to refresh—share whatever feels important, in any order.";
+  "Hi, I’m your Roomwise design agent. Tell me about the room you want to refresh.";
 
 // Each stage runs for one tick and completes on the next; content for a stage appears once it completes.
 const STAGES = [
@@ -33,7 +33,7 @@ const STAGES = [
 const LAST_TICK = STAGES.length * 2 - 1;
 const doneAt = (i: number) => i * 2 + 1;
 
-type Msg = { from: "agent" | "user"; text: string };
+type Msg = { from: "agent" | "user"; text: string; images?: string[] };
 type ApiPlan = {
   status: string;
   room_brief: { budget: number; currency: string };
@@ -58,11 +58,29 @@ type ApiPlan = {
 };
 const sum = (items: Item[]) => items.reduce((s, i) => s + i.price, 0);
 
+// Shrink a photo to at most 1024px as JPEG: small enough to send to the vision model and keep in session storage.
+async function downscale(file: File): Promise<string | null> {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    return canvas.toDataURL("image/jpeg", 0.82);
+  } catch {
+    return null; // e.g. HEIC in browsers that can't decode it
+  }
+}
+
 export default function RoomChat() {
   const [brief, setBrief] = useState<Brief>(emptyBrief);
   const [msgs, setMsgs] = useState<Msg[]>([{ from: "agent", text: INTRO }]);
   const [phase, setPhase] = useState<"ask" | "run">("ask");
   const [draft, setDraft] = useState("");
+  // Photos picked with + but not sent yet; they go out with the next message.
+  const [pending, setPending] = useState<string[]>([]);
   const [tick, setTick] = useState(0);
   const [status, setStatus] = useState("");
   const [apiPlan, setApiPlan] = useState<ApiPlan | null>(null);
@@ -101,12 +119,21 @@ export default function RoomChat() {
   }, [msgs.length, tick, phase]);
 
   async function sendMessage(text: string) {
-    const message = text.trim();
-    if (!message || typing) return;
+    const images = pending;
+    const typed = text.trim();
+    if ((!typed && !images.length) || typing) return;
+    // Photos sent without text still need words for the agent and the conversation history.
+    const message = typed || `I've attached ${images.length} room photo${images.length === 1 ? "" : "s"}.`;
+    const photos = [...brief.photos, ...images];
 
-    const history = msgs;
+    // Image data goes to the server once, with this message; history only notes that photos were attached.
+    const history = msgs.map((m) =>
+      m.images?.length ? { from: m.from, text: [m.text, `[attached ${m.images.length} room photo(s)]`].filter(Boolean).join(" ") } : m,
+    );
     setDraft("");
-    setMsgs((current) => [...current, { from: "user", text: message }]);
+    setPending([]);
+    setBrief((current) => ({ ...current, photos }));
+    setMsgs((current) => [...current, { from: "user", text: typed, images }]);
     setTyping(true);
 
     try {
@@ -116,13 +143,15 @@ export default function RoomChat() {
         body: JSON.stringify({
           message,
           history,
-          brief: { ...brief, photos: brief.photos.length > 0 ? `[${brief.photos.length} photo(s) attached]` : [] },
+          brief: { ...brief, photos: photos.length > 0 ? `[${photos.length} photo(s) attached]` : [] },
+          photoCount: photos.length,
+          images,
         }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "I couldn’t understand that response.");
 
-      const nextBrief: Brief = { ...brief, ...data.brief, photos: brief.photos };
+      const nextBrief: Brief = { ...brief, ...data.brief, photos };
       setBrief(nextBrief);
       if (typeof data.reply === "string") setMsgs((current) => [...current, { from: "agent", text: data.reply }]);
       if (data.build === true) await confirm(nextBrief);
@@ -139,14 +168,8 @@ export default function RoomChat() {
   async function addPhotos(files: FileList | null) {
     if (!files?.length) return;
     const images = [...files].filter((file) => file.type.startsWith("image/"));
-    const urls = await Promise.all(images.map((file) => new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    })));
-    setBrief((current) => ({ ...current, photos: [...current.photos, ...urls] }));
-    setMsgs((current) => [...current, { from: "user", text: `Attached ${urls.length} room photo${urls.length === 1 ? "" : "s"}.` }]);
+    const urls = (await Promise.all(images.map(downscale))).filter((url): url is string => url !== null);
+    setPending((current) => [...current, ...urls]);
   }
 
   async function confirm(planBrief = brief) {
@@ -172,6 +195,7 @@ export default function RoomChat() {
       items_to_avoid: planBrief.avoid.split(",").map((v) => v.trim()).filter(Boolean),
       constraints: planBrief.constraints,
       delivery_postal_code: planBrief.delivery || undefined,
+      photo_observations: planBrief.roomNotes || undefined,
       customer_id: "browser-session",
       confirmed: true,
     };
@@ -230,10 +254,20 @@ export default function RoomChat() {
         className="flex h-[32rem] min-h-0 min-w-0 flex-col gap-4 overflow-hidden rounded-3xl bg-page/40 p-4 lg:h-auto lg:flex-1"
         aria-label="Chat with your design agent"
       >
-        <ol className="min-h-0 flex-1 overflow-y-auto pr-1" aria-live="polite">
+        <ol className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1" aria-live="polite">
           {msgs.map((m, i) => (
             <li key={i} className="flex flex-col">
-              <Bubble from={m.from}>{m.text}</Bubble>
+              <Bubble from={m.from}>
+                {m.images?.length ? (
+                  <span className={`flex flex-wrap justify-end gap-2 ${m.text ? "mb-2" : ""}`}>
+                    {m.images.map((src, j) => (
+                      // eslint-disable-next-line @next/next/no-img-element -- local user-selected data URL
+                      <img key={j} src={src} alt={`Room photo ${j + 1}`} className="h-24 w-32 rounded-xl object-cover" />
+                    ))}
+                  </span>
+                ) : null}
+                {m.text}
+              </Bubble>
             </li>
           ))}
         </ol>
@@ -248,28 +282,55 @@ export default function RoomChat() {
               void sendMessage(draft);
             }}
           >
-            {brief.photos.length > 0 && (
-              <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                {brief.photos.map((photo, index) => (
-                  // eslint-disable-next-line @next/next/no-img-element -- local user-selected data URL
-                  <img key={index} src={photo} alt={`Attached room ${index + 1}`} className="h-12 w-16 shrink-0 rounded-lg object-cover" />
+            {pending.length > 0 && (
+              <ul className="flex items-center gap-2 overflow-x-auto pb-1 pl-16 pt-1.5" aria-label="Photos to send with your next message">
+                {pending.map((photo, index) => (
+                  <li key={index} className="relative shrink-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- local user-selected data URL */}
+                    <img src={photo} alt={`Attached room photo ${index + 1}`} className="h-14 w-20 rounded-lg object-cover" />
+                    <button
+                      type="button"
+                      aria-label={`Remove photo ${index + 1}`}
+                      className="absolute -right-1.5 -top-1.5 grid size-5 place-items-center rounded-full bg-ink text-xs leading-none text-page"
+                      onClick={() => setPending((current) => current.filter((_, j) => j !== index))}
+                    >
+                      ×
+                    </button>
+                  </li>
                 ))}
-                <span className="text-xs text-ink/65">{brief.photos.length} attached</span>
-              </div>
+              </ul>
             )}
-            <input
-              className="w-full rounded-full bg-page px-5 py-3 text-base ring-1 ring-ink/15 outline-none focus:ring-2 focus:ring-primary"
-              aria-label="Message your design agent"
-              placeholder="Tell me about your room…"
-              value={draft}
-              disabled={typing}
-              onChange={(event) => setDraft(event.target.value)}
-            />
-            <div className="flex items-center justify-between gap-4 px-2 text-xs text-ink/65">
-              <label className="cursor-pointer hover:text-primary">
-                Add room photos
-                <input className="sr-only" type="file" accept="image/*" multiple onChange={(event) => void addPhotos(event.target.files)} />
+            <div className="flex items-center gap-3">
+              <label
+                title="Add room photos"
+                className={`grid size-13 shrink-0 cursor-pointer place-items-center rounded-full bg-primary text-white shadow-sm transition-colors hover:bg-primary/90 focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-primary ${typing ? "pointer-events-none opacity-50" : ""}`}
+              >
+                <svg aria-hidden viewBox="0 0 24 24" className="size-7" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                <span className="sr-only">Add room photos</span>
+                <input
+                  className="sr-only"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  disabled={typing}
+                  onChange={(event) => {
+                    void addPhotos(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
               </label>
+              <input
+                className="w-full rounded-full bg-page px-5 py-3 text-base ring-1 ring-ink/15 outline-none focus:ring-2 focus:ring-primary"
+                aria-label="Message your design agent"
+                placeholder={pending.length ? "Add a message, or press Enter to send" : "Tell me about your room…"}
+                value={draft}
+                disabled={typing}
+                onChange={(event) => setDraft(event.target.value)}
+              />
+            </div>
+            <div className="flex justify-end px-2 text-xs text-ink/65">
               <span>Press Enter to send</span>
             </div>
             <p className="px-2 text-xs text-ink/60">

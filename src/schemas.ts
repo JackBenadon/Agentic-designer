@@ -16,6 +16,7 @@ export const roomBriefSchema = z
     items_to_avoid: stringList,
     constraints: stringList,
     delivery_postal_code: z.string().trim().min(1).optional(),
+    photo_observations: z.string().trim().max(1500).optional(),
     customer_id: z.string().trim().min(1),
   })
   .superRefine((brief, context) => {

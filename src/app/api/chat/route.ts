@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { fallbackTurn } from "@/lib/chatFallback";
+import { describeRoom } from "@/lib/vision";
 
 const briefKeys = [
   "roomType",
@@ -25,35 +27,28 @@ function cleanBrief(value: unknown, current: Record<string, unknown>) {
   return next;
 }
 
-function fallbackBrief(message: string, current: Record<string, unknown>) {
-  const next = { ...current };
-  const room = message.match(/\b(living room|bedroom|home office|office|dining room|nursery|kids?'? room|guest room|kitchen)\b/i)?.[1];
-  const amount = message.match(/(?:\$|usd\s*)?([0-9]{2,6}(?:,[0-9]{3})?)(?:\s*(usd|eur|gbp|cad|aud))?/i);
-  if (!next.roomType && room) next.roomType = room;
-  if (!next.budget && amount) next.budget = Number(amount[1].replace(",", ""));
-  if (amount?.[2]) next.currency = amount[2].toUpperCase();
-
-  const constraints = new Set(Array.isArray(next.constraints) ? next.constraints.filter((item): item is string => typeof item === "string") : []);
-  if (/\brent(?:al|ing|er)\b/i.test(message)) constraints.add("rental-friendly");
-  if (/\b(no drilling|can(?:not|'t) drill)\b/i.test(message)) constraints.add("no drilling");
-  if (/\b(dog|cat|pet)s?\b/i.test(message)) constraints.add("pets");
-  if (/\b(child|children|kid|kids|toddler)s?\b/i.test(message)) constraints.add("children");
-  if (/\b(accessib|wheelchair|mobility)\w*/i.test(message)) constraints.add("accessibility needs");
-  next.constraints = [...constraints];
-
-  if (/\b(nothing|avoid)\b.*\bdelicate\b/i.test(message)) {
-    next.avoid = [typeof next.avoid === "string" ? next.avoid : "", "delicate items"].filter(Boolean).join(", ");
-  }
-  return next;
-}
-
 const asksToBuild = (message: string) => /\b(build|create|start|make)\b.*\bplan\b/i.test(message);
 
-function fallbackReply(brief: Record<string, unknown>) {
-  if (!brief.roomType) return "What room would you like to refresh? Tell me as much or as little as you like.";
-  if (!brief.budget) return "What budget should I work within? You can include the currency too.";
-  if (!brief.style && !brief.colors) return "What kind of atmosphere, style, or colours would feel right to you?";
-  return "I have enough to begin. Add any details you want, or say “build my plan” when you’re ready.";
+function lastAgentText(history: unknown[]) {
+  const last = [...history].reverse().find((e) => e && typeof e === "object" && (e as Record<string, unknown>).from === "agent");
+  return last ? String((last as Record<string, unknown>).text ?? "") : "";
+}
+
+// Used when no LLM is configured or the LLM call fails.
+// Agent photo prompts all mention the "+" button, so its presence in history means we already asked.
+const promptedForPhoto = (history: unknown[]) =>
+  history.some((e) => e && typeof e === "object" && (e as Record<string, unknown>).from === "agent" && String((e as Record<string, unknown>).text).includes("+"));
+
+function fallbackResponse(message: string, currentBrief: Record<string, unknown>, history: unknown[], photoCount: number, seen: string | null = null, justAttached = false) {
+  const turn = fallbackTurn(message, currentBrief, lastAgentText(history), { count: photoCount, prompted: promptedForPhoto(history), seen, justAttached });
+  const ready = Boolean(turn.brief.roomType) && Number(turn.brief.budget) > 0;
+  const build = ready && asksToBuild(message);
+  return NextResponse.json({
+    reply: build ? "Lovely, I have what I need. Building your plan now." : turn.reply,
+    brief: turn.brief,
+    ready,
+    build,
+  });
 }
 
 export async function POST(request: Request) {
@@ -62,21 +57,28 @@ export async function POST(request: Request) {
     const message = typeof body.message === "string" ? body.message.trim().slice(0, 2000) : "";
     const currentBrief = body.brief && typeof body.brief === "object" ? body.brief as Record<string, unknown> : {};
     const history = Array.isArray(body.history) ? body.history.slice(-8) : [];
+    const photoCount = Number.isInteger(body.photoCount) && body.photoCount > 0 ? Math.min(body.photoCount, 20) : 0;
+    // Newly attached photos only, as downscaled data URLs; capped to keep the vision request small.
+    const images: string[] = Array.isArray(body.images)
+      ? body.images.filter((url: unknown): url is string => typeof url === "string" && /^data:image\/(jpeg|png|webp);base64,/.test(url) && url.length < 3_000_000).slice(0, 3)
+      : [];
 
     if (!message) return NextResponse.json({ error: "A message is required." }, { status: 400 });
 
-    if (!process.env.GROQ_API_KEY) {
-      const ready = Boolean(currentBrief.roomType) && Number(currentBrief.budget) > 0;
-      const build = ready && asksToBuild(message);
-      return NextResponse.json({
-        reply: build ? "I have what I need. I’ll build the plan now." : fallbackReply(currentBrief),
-        brief: currentBrief,
-        ready,
-        build,
-      });
-    }
+    if (!process.env.GROQ_API_KEY) return fallbackResponse(message, currentBrief, history, photoCount, null, images.length > 0);
 
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    const seen = await describeRoom(images);
+    if (seen) {
+      const previous = typeof currentBrief.roomNotes === "string" ? currentBrief.roomNotes : "";
+      currentBrief.roomNotes = [previous, seen].filter(Boolean).join(" ").slice(-1500);
+    }
+    const photoContext = seen
+      ? `They just attached a photo with this message (answer what they wrote too). An image model describes it as: "${seen}". In your reply, mention one or two specific things from that description, make clear it is your read of the photo, and invite them to correct it or say what they want to change. Use it for style and colour context only where the customer hasn't said otherwise. Never estimate measurements from it.`
+      : images.length > 0
+        ? "They just attached a photo, but it could not be analysed. Thank them, say it is saved with the brief, and do not describe it."
+        : `brief.roomNotes holds an image model's approximate description of their photos (empty means you have not seen them, so never describe them). Refer to it naturally when relevant. If they mention a photo but none is attached, tell them to tap the + button. If none is attached once you know the room, invite them once (optional) to add one with the + button.`;
+
+    const groqRequest = () => fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
@@ -126,9 +128,11 @@ export async function POST(request: Request) {
         messages: [
           {
             role: "system",
-            content: `You are Roomwise, a warm, conversational home decorating agent. Understand details in any order instead of following a questionnaire. Acknowledge what matters, update the structured brief, and ask at most one useful follow-up only when it would materially change the plan. Never demand optional details, never infer exact dimensions from a photo, and never invent products, prices, or reviews.
+            content: `You are Roomwise, a warm, conversational home decorating agent. Understand details in any order instead of following a questionnaire. Acknowledge what matters, update the structured brief, and ask at most one useful follow-up only when it would materially change the plan. If the customer just greets you, greet them back warmly and invite them to tell you about their room. If they are unsure (\"I don't know\", \"help me choose\"), help them decide with two or three concrete options instead of repeating your question. Never repeat your previous message word for word. Never demand optional details, never infer exact dimensions from a photo, and never invent products, prices, or reviews.
 
 A plan needs a roomType and positive budget. Style, colours, dimensions, items to keep or avoid, constraints, and delivery area are optional. When enough is known, naturally say the customer can add more or say “build my plan”. Set build=true only when the customer explicitly asks to build/start/create the plan and the required fields are present.
+
+The customer attaches room photos with the + button to the left of the message box. Photos attached so far: ${photoCount}. ${photoContext}
 
 Call respond_to_customer once. Keep reply under 55 words and preserve known brief values unless the customer changes them. Current brief: ${JSON.stringify(currentBrief)}`,
           },
@@ -143,40 +147,34 @@ Call respond_to_customer once. Keep reply under 55 words and preserve known brie
       }),
     });
 
-    const data = await response.json();
+    let response = await groqRequest();
+    let data = await response.json();
+    // gpt-oss on Groq intermittently emits a malformed tool call; one retry usually succeeds.
+    if (!response.ok && data.error?.code === "tool_use_failed") {
+      response = await groqRequest();
+      data = await response.json();
+    }
     if (!response.ok) {
-      const brief = fallbackBrief(message, currentBrief);
-      const ready = Boolean(brief.roomType) && Number(brief.budget) > 0;
-      const build = ready && asksToBuild(message);
-      return NextResponse.json({
-        reply: build ? "I have what I need. I’ll build the plan now." : fallbackReply(brief),
-        brief,
-        ready,
-        build,
-      });
+      console.error("[chat] Groq error, using fallback:", response.status, data.error?.code ?? data.error?.message ?? "");
+      return fallbackResponse(message, currentBrief, history, photoCount, seen, images.length > 0);
     }
     const messageOutput = data.choices?.[0]?.message;
     const argumentsText = messageOutput?.tool_calls?.[0]?.function?.arguments;
     if (typeof argumentsText !== "string") {
-      const brief = fallbackBrief(message, currentBrief);
-      const ready = Boolean(brief.roomType) && Number(brief.budget) > 0;
-      const build = ready && asksToBuild(message);
-      return NextResponse.json({ reply: build ? "I have what I need. I’ll build the plan now." : fallbackReply(brief), brief, ready, build });
+      console.error("[chat] no tool call from Groq, using fallback");
+      return fallbackResponse(message, currentBrief, history, photoCount, seen, images.length > 0);
     }
 
     let parsed: Record<string, unknown>;
     try {
       parsed = JSON.parse(argumentsText) as Record<string, unknown>;
     } catch {
-      const brief = fallbackBrief(message, currentBrief);
-      const ready = Boolean(brief.roomType) && Number(brief.budget) > 0;
-      const build = ready && asksToBuild(message);
-      return NextResponse.json({ reply: build ? "I have what I need. I’ll build the plan now." : fallbackReply(brief), brief, ready, build });
+      return fallbackResponse(message, currentBrief, history, photoCount, seen, images.length > 0);
     }
     const brief = cleanBrief(parsed.brief, currentBrief);
     const ready = Boolean(brief.roomType) && Number(brief.budget) > 0;
     const build = ready && parsed.build === true;
-    const reply = typeof parsed.reply === "string" && parsed.reply.trim() ? parsed.reply.trim() : fallbackReply(brief);
+    const reply = typeof parsed.reply === "string" && parsed.reply.trim() ? parsed.reply.trim() : fallbackTurn(message, brief, lastAgentText(history), { count: photoCount, prompted: true }).reply;
 
     return NextResponse.json({ reply, brief, ready, build });
   } catch (error) {

@@ -10,6 +10,7 @@ export type Brief = {
   avoid: string;
   constraints: string[];
   delivery: string;
+  roomNotes?: string; // image model's approximate read of the photos
 };
 
 const KEY = "roomwise:brief";
