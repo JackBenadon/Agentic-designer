@@ -4,15 +4,14 @@ import { RETRIEVED_AT } from "@/data/demo";
 import { money } from "@/lib/brief";
 
 const navLinks = [
-  ["/#example", "Example plan"],
   ["/demo", "Try the demo"],
 ];
 
 export function Header() {
   return (
-    <header className="bg-page print:hidden">
+    <header className="bg-surface print:hidden">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-6 px-5 py-5">
-        <Link href="/" className="font-serif text-xl tracking-tight">
+        <Link href="/" className="font-serif text-3xl tracking-tight sm:text-4xl">
           Roomwise
         </Link>
         <nav aria-label="Main" className="flex items-center gap-6 lg:gap-8">
